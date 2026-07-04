@@ -1,0 +1,10 @@
+{
+  "name": "Meal Assistant",
+  "short_name": "Meals",
+  "description": "Your household meal decision companion",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1410",
+  "theme_color": "#1a1410",
+  "icons": []
+}

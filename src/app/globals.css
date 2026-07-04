@@ -1,26 +1,97 @@
 @import "tailwindcss";
 
+/* ═══ Warm, food-friendly dark palette ═══ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Warm dark background tones */
+  --background: #1a1410;
+  --surface: #241c16;
+  --surface-elevated: #2e241c;
+  --border: #3d3026;
+
+  /* Warm foreground */
+  --foreground: #f5ebe0;
+  --foreground-muted: #b8a99a;
+  --foreground-subtle: #8a7a6b;
+
+  /* Food-friendly accent colors */
+  --accent-primary: #e87a3e;      /* warm orange */
+  --accent-secondary: #d4a574;    /* turmeric gold */
+  --accent-success: #8ab861;      /* leafy green */
+  --accent-danger: #c9583b;       /* chilli red */
+  --accent-info: #7a9cb8;         /* muted blue */
+
+  /* Confidence colors */
+  --confidence-high: #8ab861;
+  --confidence-medium: #d4a574;
+  --confidence-low: #c9583b;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-border: var(--border);
   --color-foreground: var(--foreground);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-foreground-subtle: var(--foreground-subtle);
+  --color-accent-primary: var(--accent-primary);
+  --color-accent-secondary: var(--accent-secondary);
+  --color-accent-success: var(--accent-success);
+  --color-accent-danger: var(--accent-danger);
+  --color-accent-info: var(--accent-info);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* Smooth tap feedback for mobile */
+button, [role="button"] {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* Custom scrollbar — subtle, warm */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: var(--background);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+
+/* Fade-in animation for recommendation card */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.4s ease-out;
+}
+
+/* Pulse for confidence indicator */
+@keyframes warmPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.animate-warm-pulse {
+  animation: warmPulse 2s ease-in-out infinite;
 }
