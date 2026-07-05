@@ -22,6 +22,7 @@ import Link from 'next/link';
 import {
   getHousehold,
   getDishes,
+  getDishesForHousehold,
   getRecentMeals,
   getAvailableIngredients,
   getAllergies,
@@ -94,7 +95,7 @@ export default function HomePage() {
   }, [router]);
 
   const generateRec = (hh: Household) => {
-    const dishes = getDishes();
+    const dishes = getDishesForHousehold(hh.id);
     const recentMeals = getRecentMeals(14);
     const availableIngredients = getAvailableIngredients();
     const allergies = getAllergies();
@@ -392,6 +393,16 @@ export default function HomePage() {
             Not today
           </button>
           <div className="flex gap-2 pt-2">
+            <Link
+              href="/log"
+              className="flex-1 py-2.5 rounded-xl text-xs text-center font-medium"
+              style={{
+                background: 'var(--accent-secondary)',
+                color: 'var(--background)',
+              }}
+            >
+              📝 Log a meal
+            </Link>
             <Link
               href="/history"
               className="flex-1 py-2.5 rounded-xl text-xs text-center"

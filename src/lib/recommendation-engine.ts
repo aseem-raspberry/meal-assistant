@@ -181,7 +181,14 @@ function scoreDish(
 
   // Factor 3: Preference (0-1) — household preference score
   const prefScore = context.preferences.get(dish.name) ?? 5.0; // default neutral
-  const preference = prefScore / 10;
+  let preference = prefScore / 10;
+
+  // Custom dishes with AI-inferred metadata get slightly lower confidence
+  // until they've been cooked/accepted (noted by times_recommended > 0 in prefs)
+  if (dish.is_custom && dish.ai_inferred && !context.preferences.has(dish.name)) {
+    preference *= 0.85; // 15% penalty for unverified AI-inferred dishes
+  }
+
   if (prefScore >= 7) {
     reasons.push('A household favourite');
   }

@@ -45,6 +45,9 @@ export async function POST(request: NextRequest) {
       ingredient_categories: seed.ingredient_categories as Dish['ingredient_categories'],
       dietary_tags: seed.dietary_tags,
       effort_level: seed.effort_level,
+      is_custom: false,
+      created_by_household_id: null,
+      ai_inferred: false,
       created_at: new Date().toISOString(),
     }));
 

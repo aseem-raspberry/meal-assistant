@@ -85,14 +85,14 @@ export default function HistoryPage() {
         <div className="flex-1 flex flex-col items-center justify-center text-center">
           <div className="text-4xl mb-4">🍳</div>
           <p className="text-sm" style={{ color: 'var(--foreground-muted)' }}>
-            No meals logged yet. Accept a recommendation to start your history.
+            No meals logged yet. Log what you cooked to start your history.
           </p>
           <Link
-            href="/"
+            href="/log"
             className="mt-4 px-6 py-3 rounded-xl font-medium text-sm"
-            style={{ background: 'var(--accent-primary)', color: 'var(--background)' }}
+            style={{ background: 'var(--accent-secondary)', color: 'var(--background)' }}
           >
-            Get a recommendation
+            📝 Log a meal
           </Link>
         </div>
       )}
@@ -136,25 +136,34 @@ export default function HistoryPage() {
                       }}
                     >
                       <div className="flex items-center justify-between mb-2">
-                        <span
-                          className="text-xs font-medium uppercase"
-                          style={{ color: 'var(--foreground-subtle)' }}
-                        >
+                        <span className="text-xs font-medium uppercase" style={{ color: 'var(--foreground-subtle)' }}>
                           {meal.meal_slot}
                         </span>
-                        <span
-                          className="text-xs px-2 py-0.5 rounded-full"
-                          style={{
-                            background: meal.source === 'recommended'
-                              ? 'var(--accent-secondary)'
-                              : 'var(--surface-elevated)',
-                            color: meal.source === 'recommended'
-                              ? 'var(--background)'
-                              : 'var(--foreground-subtle)',
-                          }}
-                        >
-                          {meal.source === 'recommended' ? '✨ AI' : '✋ Manual'}
-                        </span>
+                        <div className="flex gap-1.5">
+                          {meal.input_method === 'manual_photo' && (
+                            <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'var(--accent-secondary)', color: 'var(--background)' }}>
+                              📸 Photo
+                            </span>
+                          )}
+                          {meal.input_method === 'manual_text' && (
+                            <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'var(--accent-info)', color: 'var(--background)' }}>
+                              ✏️ Text
+                            </span>
+                          )}
+                          <span
+                            className="text-xs px-2 py-0.5 rounded-full"
+                            style={{
+                              background: meal.source === 'recommended'
+                                ? 'var(--accent-secondary)'
+                                : 'var(--surface-elevated)',
+                              color: meal.source === 'recommended'
+                                ? 'var(--background)'
+                                : 'var(--foreground-subtle)',
+                            }}
+                          >
+                            {meal.source === 'recommended' ? '✨ AI' : '✋ Manual'}
+                          </span>
+                        </div>
                       </div>
                       <div className="space-y-1">
                         {dishes.map((dish) => (

@@ -74,6 +74,9 @@ export function initializeDishes(): void {
     ingredient_categories: seed.ingredient_categories as Dish['ingredient_categories'],
     dietary_tags: seed.dietary_tags,
     effort_level: seed.effort_level,
+    is_custom: false,
+    created_by_household_id: null,
+    ai_inferred: false,
     created_at: new Date().toISOString(),
   }));
 
@@ -201,7 +204,9 @@ export function addMeal(
   date: string,
   mealSlot: Meal['meal_slot'],
   dishIds: string[],
-  source: 'recommended' | 'manual'
+  source: 'recommended' | 'manual',
+  inputMethod: Meal['input_method'] = 'manual_browse',
+  photoProcessed: boolean = false
 ): Meal {
   const meals = getMeals();
   const meal: Meal = {
@@ -211,6 +216,8 @@ export function addMeal(
     meal_slot: mealSlot,
     dish_ids: dishIds,
     source,
+    input_method: inputMethod,
+    photo_processed: photoProcessed,
     created_at: new Date().toISOString(),
   };
   meals.push(meal);
@@ -350,10 +357,124 @@ export function recordRejection(dishNames: string[], reason: string | null): voi
   setItem(PREF_KEY, records);
 }
 
+// ─── Custom Dish Management ─────────────────────────────────────
+
+/**
+ * Create or register a custom dish (from free text or photo recognition).
+ * Custom dishes are household-scoped (D-048 privacy).
+ */
+export function createCustomDish(
+  householdId: string,
+  data: {
+    name: string;
+    cuisine: Dish['cuisine'];
+    category: Dish['category'];
+    prep_time_minutes: number;
+    ingredients: string[];
+    ingredient_categories: Dish['ingredient_categories'];
+    dietary_tags: string[];
+    effort_level: 1 | 2 | 3;
+    ai_inferred: boolean;
+  }
+): Dish {
+  const dishes = getDishes();
+  // Check if a dish with this name already exists (seed or custom for this household)
+  const existing = dishes.find(
+    (d) => d.name.toLowerCase() === data.name.toLowerCase()
+  );
+  if (existing) return existing;
+
+  const dish: Dish = {
+    id: `custom-${generateId()}`,
+    name: data.name,
+    cuisine: data.cuisine,
+    category: data.category,
+    prep_time_minutes: data.prep_time_minutes,
+    ingredients: data.ingredients,
+    ingredient_categories: data.ingredient_categories,
+    dietary_tags: data.dietary_tags,
+    effort_level: data.effort_level,
+    is_custom: true,
+    created_by_household_id: householdId,
+    ai_inferred: data.ai_inferred,
+    created_at: new Date().toISOString(),
+  };
+  dishes.push(dish);
+  setItem(KEYS.dishes, dishes);
+  return dish;
+}
+
+/**
+ * Get all dishes available to a household: seed DB + their custom dishes.
+ */
+export function getDishesForHousehold(householdId: string): Dish[] {
+  return getDishes().filter(
+    (d) => !d.is_custom || d.created_by_household_id === householdId
+  );
+}
+
+// ─── Onboarding Preferences ─────────────────────────────────────
+
+const ONBOARD_PREF_KEY = `${STORAGE_PREFIX}onboarding-prefs`;
+
+export function getOnboardingPreferences(): Record<string, string[]> {
+  return getItem<Record<string, string[]>>(ONBOARD_PREF_KEY, {});
+}
+
+/**
+ * Save onboarding preferences: per-member loves/dislikes and household-level.
+ * These seed the preference model immediately (D-010).
+ */
+export function saveOnboardingPreferences(
+  householdId: string,
+  data: {
+    members: { name: string; loves: string[]; dislikes: string[] }[];
+  }
+): void {
+  const prefs: Record<string, string[]> = {
+    household_loves: [],
+    household_dislikes: [],
+  };
+  for (const m of data.members) {
+    prefs[`${m.name}_loves`] = m.loves;
+    prefs[`${m.name}_dislikes`] = m.dislikes;
+    prefs.household_loves.push(...m.loves);
+    prefs.household_dislikes.push(...m.dislikes);
+  }
+  setItem(ONBOARD_PREF_KEY, prefs);
+
+  // Also seed the preference scores in the learning layer
+  const records = getItem<PreferenceRecord[]>(PREF_KEY, []);
+  for (const loved of prefs.household_loves) {
+    if (!records.find((r) => r.dish_name === loved)) {
+      records.push({
+        dish_name: loved,
+        score: 7.5,
+        times_recommended: 0,
+        times_accepted: 0,
+        times_rejected: 0,
+      });
+    }
+  }
+  for (const disliked of prefs.household_dislikes) {
+    if (!records.find((r) => r.dish_name === disliked)) {
+      records.push({
+        dish_name: disliked,
+        score: 2.5,
+        times_recommended: 0,
+        times_accepted: 0,
+        times_rejected: 0,
+      });
+    }
+  }
+  setItem(PREF_KEY, records);
+}
+
 // ─── Reset (for testing) ────────────────────────────────────────
 
 export function resetAllData(): void {
   if (typeof window === 'undefined') return;
   Object.values(KEYS).forEach((key) => localStorage.removeItem(key));
   localStorage.removeItem(PREF_KEY);
+  localStorage.removeItem(ONBOARD_PREF_KEY);
 }

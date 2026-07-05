@@ -138,6 +138,9 @@ export interface Dish {
   ingredient_categories: IngredientCategory[];
   dietary_tags: string[];
   effort_level: 1 | 2 | 3; // 1=quick, 2=moderate, 3=elaborate
+  is_custom: boolean; // true if user-created (not from seed DB)
+  created_by_household_id: string | null; // null for seed dishes
+  ai_inferred: boolean; // true if metadata was AI-generated
   created_at: string;
 }
 
@@ -149,6 +152,8 @@ export interface Meal {
   meal_slot: MealSlotName;
   dish_ids: string[];
   source: 'recommended' | 'manual';
+  input_method: 'recommended' | 'manual_browse' | 'manual_text' | 'manual_photo';
+  photo_processed: boolean; // true if photo was used and deleted (D-047)
   created_at: string;
 }
 
@@ -286,4 +291,62 @@ export interface RecommendationRequest {
   household_id: string;
   date: string;
   meal_slot: MealSlotName;
+}
+
+// ─── Free Text / Photo Parsing Types ────────────────────────────
+
+/** LLM-parsed dish from free text or photo recognition */
+export interface ParsedDish {
+  name: string;
+  ingredients: string[];
+  cuisine: CuisineRegion;
+  category: MealComponent;
+  effort_level: 1 | 2 | 3;
+  confidence: number; // 0-1 — how confident the AI is in this parse
+  existing_dish_id?: string; // if matched to seed DB
+}
+
+/** Request to parse free text into structured dishes */
+export interface ParseDishesRequest {
+  text: string;
+  cuisine_region?: CuisineRegion; // hint for the LLM
+}
+
+/** Response from dish parsing */
+export interface ParseDishesResponse {
+  dishes: ParsedDish[];
+  raw_text: string;
+}
+
+/** Request for photo recognition */
+export interface RecognizeDishRequest {
+  image_base64: string; // base64-encoded image
+  cuisine_region?: CuisineRegion;
+}
+
+/** Response from photo recognition */
+export interface RecognizeDishResponse {
+  dishes: ParsedDish[];
+  overall_confidence: number;
+}
+
+/** Onboarding preference data (Step 2 expanded) */
+export interface OnboardingPreferences {
+  household_name: string;
+  size: number;
+  cuisine_region: CuisineRegion;
+  diet_type: DietType;
+  members: {
+    name: string;
+    age?: number;
+    loves: string[]; // ingredient/dish chips they tapped
+    dislikes: string[]; // ingredient/dish chips they won't eat
+    allergies: string[];
+  }[];
+}
+
+/** Onboarding recent meals (Step 4) */
+export interface OnboardingRecentMeals {
+  text: string | null; // free text input
+  parsed_dishes?: ParsedDish[];
 }
