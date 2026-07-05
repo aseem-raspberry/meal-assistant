@@ -232,6 +232,46 @@ export function getTodayMeals(householdId: string): Meal[] {
   );
 }
 
+export function getMealsForDate(householdId: string, date: string): Meal[] {
+  return getMeals().filter(
+    (m) => m.household_id === householdId && m.date === date
+  );
+}
+
+export function getMealsForDateRange(
+  householdId: string,
+  startDate: string,
+  endDate: string
+): Meal[] {
+  return getMeals().filter(
+    (m) =>
+      m.household_id === householdId &&
+      m.date >= startDate &&
+      m.date <= endDate
+  );
+}
+
+export function deleteMeal(mealId: string): void {
+  const meals = getMeals().filter((m) => m.id !== mealId);
+  setItem(KEYS.meals, meals);
+}
+
+export function deleteMealsForDateSlot(
+  householdId: string,
+  date: string,
+  mealSlot: Meal['meal_slot']
+): void {
+  const meals = getMeals().filter(
+    (m) =>
+      !(
+        m.household_id === householdId &&
+        m.date === date &&
+        m.meal_slot === mealSlot
+      )
+  );
+  setItem(KEYS.meals, meals);
+}
+
 // ─── Recommendations ────────────────────────────────────────────
 
 export function getRecommendations(): Recommendation[] {
@@ -294,12 +334,16 @@ export function addFeedbackSignal(
 
 const PREF_KEY = `${STORAGE_PREFIX}preferences`;
 
-interface PreferenceRecord {
+export interface PreferenceRecord {
   dish_name: string;
   score: number;
   times_recommended: number;
   times_accepted: number;
   times_rejected: number;
+}
+
+export function getPreferenceRecords(): PreferenceRecord[] {
+  return getItem<PreferenceRecord[]>(PREF_KEY, []);
 }
 
 export function getPreferences(): Map<string, number> {

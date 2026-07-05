@@ -14,13 +14,14 @@
  * D-047: Photos are processed for structured data and then deleted.
  */
 
-import { useState, useRef, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useRef, useEffect, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   getHousehold,
   getDishesForHousehold,
   createCustomDish,
   addMeal,
+  deleteMealsForDateSlot,
   recordAcceptance,
 } from '@/lib/data-layer';
 import type { Household, Dish, ParsedDish, MealSlotName } from '@/types/domain';
@@ -29,7 +30,20 @@ import { DishCard } from '@/components/DishCard';
 type LogMode = 'photo' | 'text' | 'browse';
 
 export default function LogMealPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex-1 flex items-center justify-center">
+        <div className="animate-warm-pulse text-sm" style={{ color: 'var(--foreground-muted)' }}>Loading...</div>
+      </div>
+    }>
+      <LogMealContent />
+    </Suspense>
+  );
+}
+
+function LogMealContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [household, setHousehold] = useState<Household | null>(null);
   const [mode, setMode] = useState<LogMode>('text');
   const [loading, setLoading] = useState(false);
@@ -49,8 +63,11 @@ export default function LogMealPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDishIds, setSelectedDishIds] = useState<Set<string>>(new Set());
 
-  // Common: meal metadata
-  const [mealSlot, setMealSlot] = useState<MealSlotName>('dinner');
+  // Common: meal metadata — read from URL or default
+  const initialDate = searchParams.get('date') || new Date().toISOString().split('T')[0];
+  const initialSlot = (searchParams.get('slot') as MealSlotName) || 'dinner';
+  const [mealDate, setMealDate] = useState(initialDate);
+  const [mealSlot, setMealSlot] = useState<MealSlotName>(initialSlot);
   const [confirmedDishes, setConfirmedDishes] = useState<Dish[]>([]);
 
   useEffect(() => {
@@ -177,10 +194,12 @@ export default function LogMealPage() {
 
     if (dishesToLog.length === 0) return;
 
-    const today = new Date().toISOString().split('T')[0];
+    // Replace existing meals for this date+slot
+    deleteMealsForDateSlot(household.id, mealDate, mealSlot);
+
     addMeal(
       household.id,
-      today,
+      mealDate,
       mealSlot,
       dishesToLog.map((d) => d.id),
       'manual',
@@ -208,6 +227,18 @@ export default function LogMealPage() {
           <button onClick={() => setConfirmedDishes([])} className="text-sm mb-2" style={{ color: 'var(--foreground-subtle)' }}>← Back</button>
           <h2 className="text-xl font-bold mb-1" style={{ color: 'var(--foreground)' }}>Log this meal</h2>
           <p className="text-sm" style={{ color: 'var(--foreground-muted)' }}>Does this look right?</p>
+        </div>
+
+        {/* Date selector */}
+        <div className="mb-4">
+          <label className="text-sm font-medium mb-2 block" style={{ color: 'var(--foreground)' }}>Date</label>
+          <input
+            type="date"
+            value={mealDate}
+            onChange={(e) => setMealDate(e.target.value)}
+            className="w-full px-4 py-3 rounded-xl text-sm"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--foreground)', colorScheme: 'dark' }}
+          />
         </div>
 
         {/* Meal slot selector */}

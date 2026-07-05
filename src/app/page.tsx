@@ -1,76 +1,88 @@
 'use client';
 
 /**
- * Home Screen — Daily Recommendation
+ * Home Screen — Week-View Calendar
  *
- * The core loop (doc 3 §13):
- *   Uncertainty → Need a meal → Receive recommendation →
- *   Understand reasoning → Choose confidently → Cook →
- *   Lightweight feedback → AI learns → Better tomorrow
+ * Shows a 7-day week with 4 meal slots per day (breakfast, lunch, snack, dinner).
+ * Users can navigate between weeks, tap any day to expand its meals, and tap a
+ * meal slot to add/edit meals via /log?date=YYYY-MM-DD&slot=<slot>.
  *
- * D-024: Every recommendation must be explainable.
- * D-013: Confidence determines assertiveness.
- * D-035: Every rejection is valuable learning.
- * D-038: Reduce time and mental effort to reach confident decision.
- *
- * Target: open → see recommendation → accept or swap → done in under 30 seconds.
+ * Each meal card has an inline delete (trash) button calling deleteMeal().
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import {
   getHousehold,
-  getDishes,
-  getDishesForHousehold,
-  getRecentMeals,
-  getAvailableIngredients,
-  getAllergies,
-  saveRecommendation,
-  getTodayRecommendation,
-  updateRecommendationStatus,
-  addMeal,
-  addFeedbackSignal,
-  recordAcceptance,
-  recordRejection,
-  getPreferences,
+  getMealsForDate,
+  getDishById,
+  deleteMeal,
   initializeDishes,
 } from '@/lib/data-layer';
-import {
-  generateRecommendation,
-  buildIngredientUsageMap,
-  type RecommendationContext,
-} from '@/lib/recommendation-engine';
-import type {
-  Household,
-  Dish,
-  Recommendation,
-  RecommendationResult,
-  ScoredDish,
-  RejectionReason,
-} from '@/types/domain';
-import { DishCard } from '@/components/DishCard';
-import { ConfidenceIndicator } from '@/components/ConfidenceIndicator';
+import type { Household, Meal, Dish, MealSlotName } from '@/types/domain';
 
-const REJECTION_REASONS: { value: RejectionReason; label: string; icon: string }[] = [
-  { value: 'too_much_effort', label: 'Too much effort', icon: '😅' },
-  { value: 'missing_ingredient', label: 'Missing ingredient', icon: '🥕' },
-  { value: 'not_in_mood', label: 'Not in the mood', icon: '🤔' },
-  { value: 'cooked_recently', label: 'Already cooked recently', icon: '🔁' },
-  { value: 'other', label: 'Other reason', icon: '✏️' },
+// ─── Constants ───────────────────────────────────────────────────
+
+const MEAL_SLOTS: { key: MealSlotName; label: string; icon: string }[] = [
+  { key: 'breakfast', label: 'Breakfast', icon: '🍳' },
+  { key: 'lunch', label: 'Lunch', icon: '🍱' },
+  { key: 'snack', label: 'Snack', icon: '🍵' },
+  { key: 'dinner', label: 'Dinner', icon: '🍽️' },
 ];
 
-export default function HomePage() {
+const SLOT_ACCENT: Record<MealSlotName, string> = {
+  breakfast: 'var(--accent-secondary)', // turmeric gold
+  lunch: 'var(--accent-success)', // leafy green
+  snack: 'var(--accent-info)', // muted blue
+  dinner: 'var(--accent-primary)', // warm orange
+};
+
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// ─── Date helpers ────────────────────────────────────────────────
+
+/** Returns YYYY-MM-DD in local time (avoids UTC offset bugs). */
+function toLocalDateStr(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/** Returns the Date for Sunday of the week containing `d` (00:00 local). */
+function getStartOfWeek(d: Date): Date {
+  const date = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  date.setDate(date.getDate() - date.getDay());
+  return date;
+}
+
+/** Returns an array of 7 Dates starting from Sunday. */
+function getWeekDays(weekStart: Date): Date[] {
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setDate(d.getDate() + i);
+    return d;
+  });
+}
+
+// ─── Component ───────────────────────────────────────────────────
+
+interface DayMealMap {
+  [dateStr: string]: Meal[];
+}
+
+export default function CalendarPage() {
   const router = useRouter();
   const [household, setHousehold] = useState<Household | null>(null);
   const [loading, setLoading] = useState(true);
-  const [result, setResult] = useState<RecommendationResult | null>(null);
-  const [currentRec, setCurrentRec] = useState<Recommendation | null>(null);
-  const [altIndex, setAltIndex] = useState(0); // 0=primary, 1=alt1, 2=alt2
-  const [showRejection, setShowRejection] = useState(false);
-  const [showInventory, setShowInventory] = useState(false);
+  const [weekStart, setWeekStart] = useState<Date>(() => getStartOfWeek(new Date()));
+  const [selectedDate, setSelectedDate] = useState<string>(() =>
+    toLocalDateStr(new Date())
+  );
+  const [mealsByDate, setMealsByDate] = useState<DayMealMap>({});
+  const [reloadKey, setReloadKey] = useState(0);
 
-  // Initialize and load data
+  // ─── Init: load household + dishes ───────────────────────────
   useEffect(() => {
     initializeDishes();
     const hh = getHousehold();
@@ -79,355 +91,445 @@ export default function HomePage() {
       return;
     }
     setHousehold(hh);
-
-    // Check if we already have a recommendation for today
-    const existingRec = getTodayRecommendation(hh.id);
-    if (existingRec && existingRec.status === 'accepted') {
-      // Already accepted today — show the meal
-      setCurrentRec(existingRec);
-      setLoading(false);
-      return;
-    }
-
-    // Generate recommendation
-    generateRec(hh);
     setLoading(false);
   }, [router]);
 
-  const generateRec = (hh: Household) => {
-    const dishes = getDishesForHousehold(hh.id);
-    const recentMeals = getRecentMeals(14);
-    const availableIngredients = getAvailableIngredients();
-    const allergies = getAllergies();
-    const preferences = getPreferences();
+  // ─── Load meals for the visible week ──────────────────────────
+  const weekDays = useMemo(() => getWeekDays(weekStart), [weekStart]);
 
-    // Build ingredient usage map (D-009)
-    const recentIngredientUsage = buildIngredientUsageMap(recentMeals, dishes);
-
-    const context: RecommendationContext = {
-      household: hh,
-      availableIngredients,
-      recentMeals,
-      recentIngredientUsage,
-      dishes,
-      preferences,
-      allergies,
-      leftovers: null,
-      availableTimeMinutes: null,
-    };
-
-    const recResult = generateRecommendation(context);
-    setResult(recResult);
-
-    // Save recommendation to storage
-    const today = new Date().toISOString().split('T')[0];
-    const rec: Recommendation = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      household_id: hh.id,
-      date: today,
-      meal_slot: 'dinner',
-      recommended_dishes: recResult.primary.map((s) => s.dish.id),
-      explanation: recResult.explanation,
-      confidence: recResult.confidence,
-      status: 'ignored',
-      decision_context_id: '',
-      alternatives: recResult.alternatives.map((alt) => alt.map((s) => s.dish.id)),
-      categories: recResult.categories,
-      created_at: new Date().toISOString(),
-    };
-    saveRecommendation(rec);
-    setCurrentRec(rec);
-    setAltIndex(0);
-  };
-
-  // ─── Get current meal to display ──────────────────────────────
-  const getCurrentMeal = (): ScoredDish[] | null => {
-    if (!result) return null;
-    if (altIndex === 0) return result.primary;
-    if (altIndex === 1 && result.alternatives[0]) return result.alternatives[0];
-    if (altIndex === 2 && result.alternatives[1]) return result.alternatives[1];
-    return result.primary;
-  };
-
-  // ─── Accept recommendation ────────────────────────────────────
-  const handleAccept = () => {
-    if (!currentRec || !household) return;
-    const meal = getCurrentMeal();
-    if (!meal) return;
-
-    // Update recommendation status
-    updateRecommendationStatus(currentRec.id, 'accepted');
-
-    // Log as a meal (D-028: meals belong to household)
-    const today = new Date().toISOString().split('T')[0];
-    addMeal(household.id, today, 'dinner', meal.map((s) => s.dish.id), 'recommended');
-
-    // Record feedback signal (D-033c)
-    addFeedbackSignal(currentRec.id, currentRec.decision_context_id, 'accepted', null);
-
-    // Update preferences — learning loop (D- Principle 7)
-    recordAcceptance(meal.map((s) => s.dish.name));
-
-    // Update local state
-    setCurrentRec({ ...currentRec, status: 'accepted' });
-  };
-
-  // ─── Reject recommendation ────────────────────────────────────
-  const handleReject = (reason: RejectionReason) => {
-    if (!currentRec || !household) return;
-    const meal = getCurrentMeal();
-    if (!meal) return;
-
-    // Update recommendation status
-    updateRecommendationStatus(currentRec.id, 'rejected');
-
-    // Record feedback signal (D-035: every rejection is valuable learning)
-    addFeedbackSignal(currentRec.id, currentRec.decision_context_id, 'rejected', reason);
-
-    // Update preferences — rejection decreases preference
-    recordRejection(meal.map((s) => s.dish.name), reason);
-
-    // Show next alternative if available
-    const nextAlt = altIndex + 1;
-    if (result && nextAlt <= result.alternatives.length) {
-      setAltIndex(nextAlt);
-      setShowRejection(false);
-    } else {
-      // No more alternatives — regenerate
-      generateRec(household);
-      setShowRejection(false);
+  useEffect(() => {
+    if (!household) return;
+    const map: DayMealMap = {};
+    for (const d of weekDays) {
+      const ds = toLocalDateStr(d);
+      map[ds] = getMealsForDate(household.id, ds);
     }
-  };
+    setMealsByDate(map);
+  }, [household, weekDays, reloadKey]);
 
-  // ─── Loading state ────────────────────────────────────────────
+  // ─── Week navigation ─────────────────────────────────────────
+  const goPrevWeek = useCallback(() => {
+    setWeekStart((prev) => {
+      const d = new Date(prev);
+      d.setDate(d.getDate() - 7);
+      return d;
+    });
+  }, []);
+
+  const goNextWeek = useCallback(() => {
+    setWeekStart((prev) => {
+      const d = new Date(prev);
+      d.setDate(d.getDate() + 7);
+      return d;
+    });
+  }, []);
+
+  const goThisWeek = useCallback(() => {
+    setWeekStart(getStartOfWeek(new Date()));
+    setSelectedDate(toLocalDateStr(new Date()));
+  }, []);
+
+  // ─── Navigation to /log ──────────────────────────────────────
+  const navigateToLog = useCallback(
+    (date: string, slot: MealSlotName) => {
+      router.push(`/log?date=${encodeURIComponent(date)}&slot=${slot}`);
+    },
+    [router]
+  );
+
+  // ─── Delete meal ─────────────────────────────────────────────
+  const handleDeleteMeal = useCallback(
+    (mealId: string) => {
+      deleteMeal(mealId);
+      setReloadKey((k) => k + 1);
+    },
+    []
+  );
+
+  // ─── Formatting ──────────────────────────────────────────────
+  const weekRangeLabel = useMemo(() => {
+    const start = weekDays[0];
+    const end = weekDays[6];
+    const startStr = start.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+    });
+    const endStr = end.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+    });
+    const sameMonth = start.getMonth() === end.getMonth();
+    return sameMonth
+      ? `${start.toLocaleDateString('en-IN', { month: 'short' })} ${start.getDate()} – ${end.getDate()}`
+      : `${startStr} – ${endStr}`;
+  }, [weekDays]);
+
+  const isThisWeek = useMemo(() => {
+    const thisWeekStart = getStartOfWeek(new Date());
+    return (
+      weekStart.getTime() === thisWeekStart.getTime()
+    );
+  }, [weekStart]);
+
+  // ─── Get meals for a slot on the selected day ────────────────
+  const selectedDayMeals = mealsByDate[selectedDate] ?? [];
+  const mealsBySlot = useMemo(() => {
+    const map: Partial<Record<MealSlotName, Meal[]>> = {};
+    for (const slot of MEAL_SLOTS) {
+      map[slot.key] = selectedDayMeals.filter((m) => m.meal_slot === slot.key);
+    }
+    return map;
+  }, [selectedDayMeals]);
+
+  // ─── Resolve dish names for a meal ───────────────────────────
+  const getDishNames = useCallback((meal: Meal): string[] => {
+    return meal.dish_ids
+      .map((id) => getDishById(id)?.name)
+      .filter((n): n is string => Boolean(n));
+  }, []);
+
+  // ─── Count filled slots for a day ────────────────────────────
+  const filledSlotsCount = useCallback(
+    (dateStr: string): number => {
+      const meals = mealsByDate[dateStr] ?? [];
+      const slots = new Set(meals.map((m) => m.meal_slot));
+      return slots.size;
+    },
+    [mealsByDate]
+  );
+
+  // ─── Loading state ───────────────────────────────────────────
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-warm-pulse text-sm" style={{ color: 'var(--foreground-muted)' }}>
-            Thinking about tonight...
-          </div>
+        <div
+          className="animate-warm-pulse text-sm"
+          style={{ color: 'var(--foreground-muted)' }}
+        >
+          Loading your week...
         </div>
       </div>
     );
   }
 
-  // ─── No household ─────────────────────────────────────────────
   if (!household) {
-    return null; // redirecting
+    return null; // redirecting to onboarding
   }
 
-  // ─── Already accepted today ──────────────────────────────────
-  if (currentRec?.status === 'accepted') {
-    const meal = getCurrentMeal();
-    return (
-      <div className="flex-1 flex flex-col p-6">
-        <div className="flex-1 flex flex-col items-center justify-center text-center">
-          <div className="text-4xl mb-4">✅</div>
-          <h2 className="text-xl font-bold mb-2" style={{ color: 'var(--foreground)' }}>
-            Tonight&apos;s sorted!
-          </h2>
-          {meal && (
-            <div className="space-y-2 mt-4 w-full">
-              {meal.map((s, i) => (
-                <DishCard key={s.dish.id} dish={s.dish} isPrimary={i === 0} />
-              ))}
-            </div>
-          )}
-          <p className="text-sm mt-6" style={{ color: 'var(--foreground-muted)' }}>
-            Enjoy your dinner. I&apos;ll have a fresh suggestion tomorrow.
-          </p>
-        </div>
-
-        <div className="mt-6 space-y-2">
-          <Link
-            href="/history"
-            className="block w-full py-3 rounded-xl text-sm font-medium text-center"
-            style={{
-              background: 'var(--surface)',
-              border: '1px solid var(--border)',
-              color: 'var(--foreground-muted)',
-            }}
-          >
-            View meal history
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  // ─── No recommendation generated ──────────────────────────────
-  if (!result || !currentRec) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
-        <p style={{ color: 'var(--foreground-muted)' }}>
-          Having trouble generating a recommendation. Try checking your inventory.
-        </p>
-        <button
-          onClick={() => router.push('/inventory')}
-          className="mt-4 px-6 py-3 rounded-xl font-medium"
-          style={{ background: 'var(--accent-primary)', color: 'var(--background)' }}
-        >
-          Check inventory
-        </button>
-      </div>
-    );
-  }
-
-  const meal = getCurrentMeal();
-
+  // ─── Render ──────────────────────────────────────────────────
   return (
-    <div className="flex-1 flex flex-col p-6">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <p className="text-xs" style={{ color: 'var(--foreground-subtle)' }}>
-            {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' })}
-          </p>
-          <h1 className="text-lg font-bold" style={{ color: 'var(--foreground)' }}>
-            {household.name}
-          </h1>
-        </div>
-        <Link
-          href="/inventory"
-          className="text-xs px-3 py-1.5 rounded-lg"
-          style={{
-            background: 'var(--surface)',
-            border: '1px solid var(--border)',
-            color: 'var(--foreground-muted)',
-          }}
-        >
-          🥕 Inventory
-        </Link>
-      </div>
-
-      {/* Recommendation card */}
-      {meal && (
-        <div className="animate-fade-in-up flex-1 flex flex-col">
-          {/* Explanation */}
-          <div
-            className="mb-4 p-4 rounded-xl"
-            style={{
-              background: 'var(--surface)',
-              border: '1px solid var(--border)',
-            }}
-          >
-            <p className="text-sm leading-relaxed" style={{ color: 'var(--foreground)' }}>
-              {result.explanation}
+    <div className="flex-1 flex flex-col">
+      {/* ─── Header: Household + Week navigation ─── */}
+      <div
+        className="px-4 pt-4 pb-3"
+        style={{ borderBottom: '1px solid var(--border)' }}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p
+              className="text-xs"
+              style={{ color: 'var(--foreground-subtle)' }}
+            >
+              {household.name}
             </p>
-            <div className="mt-3">
-              <ConfidenceIndicator
-                confidence={result.confidence}
-                mealCount={household ? getRecentMeals(14).length : 0}
-              />
-            </div>
+            <h1
+              className="text-lg font-bold"
+              style={{ color: 'var(--foreground)' }}
+            >
+              Meal Calendar
+            </h1>
           </div>
-
-          {/* Dishes */}
-          <div className="space-y-2 flex-1">
-            {meal.map((s, i) => (
-              <DishCard key={s.dish.id} dish={s.dish} isPrimary={i === 0} />
-            ))}
-          </div>
-
-          {/* Alternatives indicator */}
-          {altIndex < result.alternatives.length && (
-            <p className="text-xs text-center mt-3" style={{ color: 'var(--foreground-subtle)' }}>
-              {altIndex === 0 ? '2 alternatives available' : `${result.alternatives.length - altIndex} more alternative${result.alternatives.length - altIndex !== 1 ? 's' : ''}`}
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Rejection reason picker */}
-      {showRejection ? (
-        <div className="mt-4 space-y-2 animate-fade-in-up">
-          <p className="text-sm text-center mb-3" style={{ color: 'var(--foreground-muted)' }}>
-            No worries — what&apos;s the reason?
-          </p>
-          {REJECTION_REASONS.map((r) => (
+          {!isThisWeek && (
             <button
-              key={r.value}
-              onClick={() => handleReject(r.value)}
-              className="w-full py-3 px-4 rounded-xl text-left text-sm font-medium transition-all active:scale-[0.98] flex items-center gap-3"
+              onClick={goThisWeek}
+              className="text-xs px-3 py-1.5 rounded-lg font-medium"
               style={{
                 background: 'var(--surface)',
                 border: '1px solid var(--border)',
-                color: 'var(--foreground)',
+                color: 'var(--accent-primary)',
               }}
             >
-              <span className="text-lg">{r.icon}</span>
-              {r.label}
+              Today
             </button>
-          ))}
-          <button
-            onClick={() => setShowRejection(false)}
-            className="w-full py-2 text-sm"
-            style={{ color: 'var(--foreground-subtle)' }}
-          >
-            Cancel
-          </button>
+          )}
         </div>
-      ) : (
-        /* Action buttons */
-        <div className="mt-4 space-y-2">
+
+        {/* Week navigation row */}
+        <div className="flex items-center justify-between">
           <button
-            onClick={handleAccept}
-            className="w-full py-3.5 rounded-xl font-semibold text-base transition-all active:scale-[0.98]"
-            style={{
-              background: 'var(--accent-success)',
-              color: 'var(--background)',
-            }}
-          >
-            ✓ Cook this tonight
-          </button>
-          <button
-            onClick={() => setShowRejection(true)}
-            className="w-full py-3.5 rounded-xl font-medium text-base transition-all active:scale-[0.98]"
+            onClick={goPrevWeek}
+            aria-label="Previous week"
+            className="p-2 rounded-lg transition-all active:scale-95"
             style={{
               background: 'var(--surface)',
               border: '1px solid var(--border)',
               color: 'var(--foreground-muted)',
             }}
           >
-            Not today
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path
+                d="M10 12L6 8L10 4"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
           </button>
-          <div className="flex gap-2 pt-2">
-            <Link
-              href="/log"
-              className="flex-1 py-2.5 rounded-xl text-xs text-center font-medium"
-              style={{
-                background: 'var(--accent-secondary)',
-                color: 'var(--background)',
-              }}
+
+          <div className="text-center">
+            <p
+              className="text-sm font-semibold"
+              style={{ color: 'var(--foreground)' }}
             >
-              📝 Log a meal
-            </Link>
-            <Link
-              href="/history"
-              className="flex-1 py-2.5 rounded-xl text-xs text-center"
-              style={{
-                background: 'var(--surface)',
-                border: '1px solid var(--border)',
-                color: 'var(--foreground-subtle)',
-              }}
+              {weekRangeLabel}
+            </p>
+            <p
+              className="text-xs"
+              style={{ color: 'var(--foreground-subtle)' }}
             >
-              📖 History
-            </Link>
-            <button
-              onClick={() => household && generateRec(household)}
-              className="flex-1 py-2.5 rounded-xl text-xs"
-              style={{
-                background: 'var(--surface)',
-                border: '1px solid var(--border)',
-                color: 'var(--foreground-subtle)',
-              }}
-            >
-              🔄 Refresh
-            </button>
+              {isThisWeek ? 'This week' : ''}
+            </p>
           </div>
+
+          <button
+            onClick={goNextWeek}
+            aria-label="Next week"
+            className="p-2 rounded-lg transition-all active:scale-95"
+            style={{
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              color: 'var(--foreground-muted)',
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path
+                d="M6 4L10 8L6 12"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
         </div>
-      )}
+      </div>
+
+      {/* ─── Week strip: 7 day columns ─── */}
+      <div
+        className="px-2 py-2"
+        style={{ borderBottom: '1px solid var(--border)' }}
+      >
+        <div className="grid grid-cols-7 gap-1">
+          {weekDays.map((d) => {
+            const dateStr = toLocalDateStr(d);
+            const isSelected = dateStr === selectedDate;
+            const isToday =
+              dateStr === toLocalDateStr(new Date());
+            const filled = filledSlotsCount(dateStr);
+            const dayNum = d.getDate();
+            const weekdayIdx = d.getDay();
+
+            return (
+              <button
+                key={dateStr}
+                onClick={() => setSelectedDate(dateStr)}
+                className="flex flex-col items-center gap-1 py-2 rounded-lg transition-all active:scale-95"
+                style={{
+                  background: isSelected
+                    ? 'var(--surface-elevated)'
+                    : 'transparent',
+                  border: isSelected
+                    ? '1px solid var(--accent-primary)'
+                    : '1px solid transparent',
+                }}
+              >
+                <span
+                  className="text-[10px] font-medium"
+                  style={{
+                    color: isSelected
+                      ? 'var(--accent-primary)'
+                      : 'var(--foreground-subtle)',
+                  }}
+                >
+                  {WEEKDAY_LABELS[weekdayIdx]}
+                </span>
+                <span
+                  className="text-sm font-semibold w-7 h-7 flex items-center justify-center rounded-full"
+                  style={{
+                    background: isToday
+                      ? 'var(--accent-primary)'
+                      : 'transparent',
+                    color: isToday
+                      ? 'var(--background)'
+                      : isSelected
+                        ? 'var(--foreground)'
+                        : 'var(--foreground-muted)',
+                  }}
+                >
+                  {dayNum}
+                </span>
+                {/* Slot fill dots */}
+                <div className="flex gap-0.5 h-1">
+                  {Array.from({ length: 4 }, (_, i) => (
+                    <span
+                      key={i}
+                      className="w-1 h-1 rounded-full"
+                      style={{
+                        background:
+                          i < filled
+                            ? 'var(--accent-success)'
+                            : 'var(--border)',
+                      }}
+                    />
+                  ))}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ─── Selected day: meal slots ─── */}
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        <p
+          className="text-xs mb-3"
+          style={{ color: 'var(--foreground-subtle)' }}
+        >
+          {new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-IN', {
+            weekday: 'long',
+            day: 'numeric',
+            month: 'long',
+          })}
+        </p>
+
+        <div className="space-y-3">
+          {MEAL_SLOTS.map((slot) => {
+            const slotMeals = mealsBySlot[slot.key] ?? [];
+            const hasMeals = slotMeals.length > 0;
+            const accent = SLOT_ACCENT[slot.key];
+
+            return (
+              <div key={slot.key}>
+                {/* Slot header row — tap to add/edit */}
+                <button
+                  onClick={() => navigateToLog(selectedDate, slot.key)}
+                  className="w-full flex items-center justify-between py-2 px-3 rounded-lg transition-all active:scale-[0.98] text-left"
+                  style={{
+                    background: 'var(--surface)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="w-2 h-2 rounded-full"
+                      style={{ background: accent }}
+                    />
+                    <span className="text-base">{slot.icon}</span>
+                    <span
+                      className="text-sm font-medium"
+                      style={{ color: 'var(--foreground)' }}
+                    >
+                      {slot.label}
+                    </span>
+                  </div>
+                  <span
+                    className="text-xs"
+                    style={{
+                      color: hasMeals
+                        ? 'var(--foreground-subtle)'
+                        : 'var(--accent-primary)',
+                    }}
+                  >
+                    {hasMeals ? 'Edit' : '+ Add'}
+                  </span>
+                </button>
+
+                {/* Meal cards for this slot */}
+                {hasMeals && (
+                  <div className="mt-1.5 space-y-1.5 pl-3">
+                    {slotMeals.map((meal) => {
+                      const dishNames = getDishNames(meal);
+                      return (
+                        <div
+                          key={meal.id}
+                          className="flex items-start gap-2 p-2.5 rounded-lg"
+                          style={{
+                            background: 'var(--surface-elevated)',
+                            border: '1px solid var(--border)',
+                            borderLeft: `3px solid ${accent}`,
+                          }}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <p
+                              className="text-sm font-medium leading-snug"
+                              style={{ color: 'var(--foreground)' }}
+                            >
+                              {dishNames.length > 0
+                                ? dishNames.join(', ')
+                                : 'Untitled meal'}
+                            </p>
+                            <div className="flex items-center gap-2 mt-1">
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded"
+                                style={{
+                                  background: 'var(--surface)',
+                                  color: 'var(--foreground-subtle)',
+                                }}
+                              >
+                                {meal.source === 'recommended'
+                                  ? '✨ Recommended'
+                                  : '✍️ Manual'}
+                              </span>
+                              {meal.dish_ids.length > 1 && (
+                                <span
+                                  className="text-[10px]"
+                                  style={{
+                                    color: 'var(--foreground-subtle)',
+                                  }}
+                                >
+                                  {meal.dish_ids.length} dishes
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {/* Delete button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteMeal(meal.id);
+                            }}
+                            aria-label="Delete meal"
+                            className="p-1.5 rounded-md transition-all active:scale-90 flex-shrink-0"
+                            style={{
+                              color: 'var(--foreground-subtle)',
+                            }}
+                          >
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 16 16"
+                              fill="none"
+                            >
+                              <path
+                                d="M3 4.5H13M6.5 4.5V3C6.5 2.44772 6.94772 2 7.5 2H8.5C9.05228 2 9.5 2.44772 9.5 3V4.5M5 4.5L5.5 13C5.55228 13.5523 6 14 6.5 14H9.5C10 14 10.4477 13.5523 10.5 13L11 4.5"
+                                stroke="currentColor"
+                                strokeWidth="1.2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
